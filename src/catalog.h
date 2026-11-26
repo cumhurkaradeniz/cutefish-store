@@ -60,14 +60,38 @@ inline std::string autoTranslateIfTurkish(const std::string& text) {
 }
 inline std::string resolveAppIcon(const std::string& rawIcon) {
     if (rawIcon.empty()) return "preferences-system";
-    std::string stem = fs::path(rawIcon).stem().string();
-    for (const auto& dir : {"/usr/share/pixmaps", "/usr/share/icons/Cutefish/apps", "/usr/share/icons/Cutefish/scalable/apps", "/usr/share/icons/hicolor/scalable/apps"}) {
-        if (fs::exists(std::string(dir) + "/" + stem + ".png") || fs::exists(std::string(dir) + "/" + stem + ".svg")) return stem;
+    if (fs::exists(rawIcon)) return rawIcon;
+    static std::unordered_map<std::string, std::string> iconMap;
+    static bool initialized = false;
+    if (!initialized) {
+        initialized = true;
+        for (const auto& base : {"/usr/share/icons/Crule", "/usr/share/icons/Cutefish", "/usr/share/icons/hicolor", "/usr/share/icons", "/usr/share/pixmaps", "/var/lib/swcatalog/icons", "/var/cache/swcatalog/icons", "/var/lib/swcatalog/icons", "/var/lib/app-info/icons"}) {
+            std::error_code ec;
+            if (!fs::exists(base, ec)) continue;
+            for (const auto& entry : fs::recursive_directory_iterator(base, fs::directory_options::skip_permission_denied, ec)) {
+                if (!entry.is_regular_file(ec)) continue;
+                auto ext = entry.path().extension().string();
+                if (ext == ".png" || ext == ".svg" || ext == ".xpm") {
+                    std::string stem = entry.path().stem().string();
+                    std::string full = entry.path().string();
+                    if (!iconMap.count(stem) || (ext == ".png" && (full.find("128") != std::string::npos || full.find("256") != std::string::npos || full.find("64") != std::string::npos || full.find("/pixmaps/") != std::string::npos))) {
+                        iconMap[stem] = full;
+                    }
+                    auto uPos = stem.find('_');
+                    if (uPos != std::string::npos) {
+                        std::string shortStem = stem.substr(uPos + 1);
+                        if (!iconMap.count(shortStem) || ext == ".png") iconMap[shortStem] = full;
+                    }
+                }
+            }
+        }
     }
+    std::string stem = fs::path(rawIcon).stem().string();
+    if (iconMap.count(stem)) return iconMap[stem];
     auto pos = stem.find('_');
     if (pos != std::string::npos) {
         std::string clean = stem.substr(pos + 1);
-        if (fs::exists("/usr/share/pixmaps/" + clean + ".png")) return clean;
+        if (iconMap.count(clean)) return iconMap[clean];
     }
     return "preferences-system";
 }
@@ -146,6 +170,36 @@ inline void appendFlatpakApps(std::vector<StoreApp>& apps) {
     }
 }
 
+inline void appendSystemInstalledApps(std::vector<StoreApp>& apps) {
+    std::unordered_set<std::string> existingPkgs, existingTitles;
+    for (const auto& a : apps) {
+        if (!a.pkgName.empty()) existingPkgs.insert(a.pkgName);
+        if (!a.title.empty()) existingTitles.insert(a.title);
+    }
+    const char* cmd = "python3 /usr/share/cutefish-store/scan_apps.py 2>/dev/null";
+
+    if (FILE* p = popen(cmd, "r")) {
+        char buf[2048];
+        while (fgets(buf, sizeof(buf), p)) {
+            std::string line(buf);
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+            size_t p1 = line.find('\t');
+            size_t p2 = (p1 != std::string::npos) ? line.find('\t', p1 + 1) : std::string::npos;
+            size_t p3 = (p2 != std::string::npos) ? line.find('\t', p2 + 1) : std::string::npos;
+            if (p3 == std::string::npos) continue;
+            std::string title = line.substr(0, p1);
+            std::string summary = line.substr(p1 + 1, p2 - p1 - 1);
+            std::string icon = line.substr(p2 + 1, p3 - p2 - 1);
+            std::string pkg = line.substr(p3 + 1);
+            if (existingPkgs.count(pkg) || existingTitles.count(title)) continue;
+            existingPkgs.insert(pkg);
+            existingTitles.insert(title);
+            apps.push_back({title, summary, summary, trText("Sistem Uygulaması", "System Application"), "Open Source", "Kesfet", resolveAppIcon(icon), pkg, "", true, false, false, 0});
+        }
+        pclose(p);
+    }
+}
+
 inline std::vector<StoreApp> loadSystemCatalog() {
     std::vector<StoreApp> apps;
     auto installedSet = getInstalledPackages();
@@ -203,5 +257,6 @@ inline std::vector<StoreApp> loadSystemCatalog() {
     });
     g_object_unref(cbox); g_object_unref(pool);
     appendFlatpakApps(apps);
+    appendSystemInstalledApps(apps);
     return apps;
 }
