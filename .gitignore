@@ -1,0 +1,6 @@
+build/
+pkg_build/
+AppDir/
+*.deb
+*.AppImage
+*.run
